@@ -1,127 +1,3 @@
-# import numpy as np
-# import torch
-# import torch.nn as nn
-# import tqdm
-# from Network import NeRFNetwork
-
-# def compute_accumulated_transmittance(alphas):
-#     accumulated_transmittance = torch.cumprod(alphas, 1) #Accumulated transmittance over all points (dim 1)
-#     return torch.cat((torch.ones((accumulated_transmittance.shape[0], 1), device=alphas.device), #Transmission is 1 at first point of each ray
-#                     accumulated_transmittance[:, :-1]), dim=-1)
-
-# def render_from_presampled(nerf_model, ray_origins, ray_directions, points_3D):
-#     # Compute distances between consecutive points along each ray
-#     # Assuming points_3D shape is [batch_size, num_samples, 3]
-    
-#     # Calculate distances between consecutive samples
-#     deltas = torch.norm(points_3D[:, 1:] - points_3D[:, :-1], dim=-1)
-#     # Add a large value for the last delta
-#     deltas = torch.cat([deltas, torch.ones(deltas.shape[0], 1, device=deltas.device) * 1e10], dim=-1)
-    
-#     # Reshape ray_directions to match the points
-#     num_samples = points_3D.shape[1]
-#     ray_directions_expanded = ray_directions.unsqueeze(1).expand(-1, num_samples, -1)
-    
-#     # Predict colors and densities
-#     points_flat = points_3D.reshape(-1, 3)
-#     directions_flat = ray_directions_expanded.reshape(-1, 3)
-#     colors, sigma = nerf_model(points_flat, directions_flat)
-    
-#     # Reshape back
-#     colors = colors.reshape(points_3D.shape[0], num_samples, -1)  # [batch_size, num_samples, 3]
-#     sigma = sigma.reshape(points_3D.shape[0], num_samples)        # [batch_size, num_samples]
-    
-#     # Calculate alpha from sigma and deltas
-#     alpha = 1 - torch.exp(-sigma * deltas)
-    
-#     # Compute weights using accumulated transmittance
-#     weights = compute_accumulated_transmittance(1 - alpha).unsqueeze(2) * alpha.unsqueeze(2)
-    
-#     # Compute final pixel colors
-#     c = (weights * colors).sum(dim=1)
-#     weight_sum = weights.sum(dim=1).sum(dim=-1)
-    
-#     # Return final color (adding white background)
-#     return c + 1 - weight_sum.unsqueeze(-1)
-
-# class NeRFDataset(Dataset):
-#     def __init__(self, ray_origins_path, ray_directions_path, rgb_path, points_3D_path=None):
-#         # Load ray origins and directions
-#         self.ray_origins = np.load(ray_origins_path)  # [num_images, H, W, 3]
-#         self.ray_directions = np.load(ray_directions_path)  # [num_images, H, W, 3]
-#         self.rgb_values = np.load(rgb_path)  # [num_images, H, W, 3]
-        
-#         # Get shapes
-#         self.num_images, self.H, self.W, _ = self.ray_origins.shape
-        
-#         # If points_3D file is provided, load it
-#         if points_3D_path:
-#             # Use memory mapping for large files
-#             self.points_3D = np.load(points_3D_path, mmap_mode='r')  # [num_images, num_samples, H, W, 3]
-#             self.num_samples = self.points_3D.shape[1]
-#             self.use_precomputed_points = True
-#         else:
-#             self.use_precomputed_points = False
-            
-#         # Reshape to have each ray as a separate data point
-#         self.ray_origins = self.ray_origins.reshape(-1, 3)
-#         self.ray_directions = self.ray_directions.reshape(-1, 3)
-#         self.rgb_values = self.rgb_values.reshape(-1, 3)
-        
-#         # Create index mapping from flattened to original indices
-#         self.total_rays = self.ray_origins.shape[0]
-#         self.idx_mapping = np.zeros((self.total_rays, 3), dtype=np.int32)
-#         for img_idx in range(self.num_images):
-#             for h in range(self.H):
-#                 for w in range(self.W):
-#                     flat_idx = img_idx * self.H * self.W + h * self.W + w
-#                     self.idx_mapping[flat_idx] = [img_idx, h, w]
-        
-#     def __len__(self):
-#         return self.total_rays
-    
-#     def __getitem__(self, idx):
-#         # Get ray origin, direction and RGB
-#         ray_origin = self.ray_origins[idx]
-#         ray_direction = self.ray_directions[idx]
-#         rgb = self.rgb_values[idx]
-        
-#         # Combine into a single sample
-#         sample = np.concatenate([ray_origin, ray_direction, rgb])
-        
-#         if self.use_precomputed_points:
-#             # Get the original indices
-#             img_idx, h, w = self.idx_mapping[idx]
-#             # Extract the points for this ray
-#             points = self.points_3D[img_idx, :, h, w, :]
-#             return sample, points
-#         else:
-#             return sample
-
-# def train(nerf_model, optimizer, scheduler, data_loader, device='cuda', nb_epochs=int(1e5)):
-#     training_loss = []
-#     for epoch in tqdm(range(nb_epochs)):
-#         for batch in data_loader:
-#             if len(batch) == 2:  # If using precomputed points
-#                 data, points_3D = batch
-#                 ray_origins = data[:, :3].to(device)
-#                 ray_directions = data[:, 3:6].to(device)
-#                 ground_truth_px_values = data[:, 6:].to(device)
-#                 points_3D = points_3D.to(device)
-                
-#                 regenerated_px_values = render_from_presampled(
-#                     nerf_model, ray_origins, ray_directions, points_3D
-#                 )
-            
-#             loss = ((ground_truth_px_values - regenerated_px_values) ** 2).sum()
-            
-#             optimizer.zero_grad()
-#             loss.backward()
-#             optimizer.step()
-#             training_loss.append(loss.item())
-#         scheduler.step()
-#     return training_loss
-
 import os
 import numpy as np
 import torch
@@ -131,104 +7,128 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import argparse
 import gc
+import wandb
 
 from Network import NeRFNetwork
 
-class NeRFDataset(Dataset):
-    # def __init__(self, ray_origins_path, ray_directions_path, rgb_path, points_3D_path=None):
-    #     # Load ray origins and directions
-    #     self.ray_origins = np.load(ray_origins_path).copy()  # Adding .copy() to make writable
-    #     self.ray_directions = np.load(ray_directions_path).copy()
-    #     self.rgb_values = np.load(rgb_path).copy()
-        
-    #     # If points_3D file is provided, load it
-    #     if points_3D_path:
-    #         # Modified: don't use mmap_mode
-    #         self.points_3D = np.load(points_3D_path)
-    #         # If memory is an issue, you can load small chunks at a time instead
-    #         self.num_samples = self.points_3D.shape[1]
-    #         self.use_precomputed_points = True
-    #     else:
-    #         self.use_precomputed_points = False
-            
-    #     # Reshape to have each ray as a separate data point
-    #     self.ray_origins = self.ray_origins.reshape(-1, 3)
-    #     self.ray_directions = self.ray_directions.reshape(-1, 3)
-    #     self.rgb_values = self.rgb_values.reshape(-1, 3)
-        
-    #     # Create index mapping from flattened to original indices
-    #     self.total_rays = self.ray_origins.shape[0]
-    #     self.idx_mapping = np.zeros((self.total_rays, 3), dtype=np.int32)
-    #     for img_idx in range(self.num_images):
-    #         for h in range(self.H):
-    #             for w in range(self.W):
-    #                 flat_idx = img_idx * self.H * self.W + h * self.W + w
-    #                 self.idx_mapping[flat_idx] = [img_idx, h, w]
+wandb.init(project="NeRF", name="ship_train")
 
+class NeRFDataset(Dataset):
     def __init__(self, ray_origins_path, ray_directions_path, rgb_path, points_3D_path=None):
         # Load ray origins and directions
+        print("Loading ray origins...")
         self.ray_origins = np.load(ray_origins_path).copy()  # Adding .copy() to make writable
+        print(f"Ray origins shape: {self.ray_origins.shape}")
+        
+        print("Loading ray directions...")
         self.ray_directions = np.load(ray_directions_path).copy()
+        print(f"Ray directions shape: {self.ray_directions.shape}")
+        
+        print("Loading RGB values...")
         self.rgb_values = np.load(rgb_path).copy()
+        print(f"RGB values shape: {self.rgb_values.shape}")
+        
+        # Extract images, height, width from the data shape
+        # Assuming the original data shape is (num_images, H, W, 3)
+        if len(self.ray_origins.shape) == 4:
+            self.num_images, self.H, self.W = self.ray_origins.shape[:3]
+        else:
+            # If already flattened, you need to provide these values
+            # Either hardcode them or pass them as parameters
+            raise ValueError("Data is already flattened, but num_images, H, W not provided")
+        
+        print(f"Dataset has {self.num_images} images of size {self.H}x{self.W}")
         
         # If points_3D file is provided, load it
         if points_3D_path:
-            # Modified: don't use mmap_mode
+            print("Loading 3D points...")
             self.points_3D = np.load(points_3D_path)
-            # If memory is an issue, you can load small chunks at a time instead
-            self.num_samples = self.points_3D.shape[1]
+            print(f"3D points shape: {self.points_3D.shape}")
+            
+            # Check if we need to flatten the points_3D array
+            if len(self.points_3D.shape) == 5:  # Shape: (num_images, samples_per_ray, H, W, 3)
+                print("Reshaping 3D points to match flattened rays...")
+                # We need to reshape to (num_rays, samples_per_ray, 3)
+                num_images, samples_per_ray, H, W, coords = self.points_3D.shape
+                self.points_3D = self.points_3D.reshape(-1, samples_per_ray, coords)
+                print(f"Reshaped 3D points shape: {self.points_3D.shape}")
+            
             self.use_precomputed_points = True
         else:
             self.use_precomputed_points = False
-        
-        # For single image processing
-        self.num_images = 1
-        
+            
         # Reshape to have each ray as a separate data point
+        print("Reshaping data...")
         self.ray_origins = self.ray_origins.reshape(-1, 3)
         self.ray_directions = self.ray_directions.reshape(-1, 3)
         self.rgb_values = self.rgb_values.reshape(-1, 3)
         
-        # For single image, H and W should be derived from data dimensions
-        self.H = int(np.sqrt(self.ray_origins.shape[0]))
-        self.W = self.H  # Assuming square image, otherwise adjust accordingly
-        
         # Create index mapping from flattened to original indices
+        print("Creating index mapping...")
         self.total_rays = self.ray_origins.shape[0]
         self.idx_mapping = np.zeros((self.total_rays, 3), dtype=np.int32)
+        for img_idx in range(self.num_images):
+            for h in range(self.H):
+                for w in range(self.W):
+                    flat_idx = img_idx * self.H * self.W + h * self.W + w
+                    self.idx_mapping[flat_idx] = [img_idx, h, w]
         
-        # Only one image (img_idx = 0)
-        for h in range(self.H):
-            for w in range(self.W):
-                flat_idx = h * self.W + w
-                self.idx_mapping[flat_idx] = [0, h, w]
-        
+        print(f"Dataset initialized with {self.total_rays} rays")
+    
     def __len__(self):
         return self.total_rays
     
     def __getitem__(self, idx):
-        # Get ray origin, direction and RGB
         ray_origin = self.ray_origins[idx]
         ray_direction = self.ray_directions[idx]
-        rgb = self.rgb_values[idx]
-        
-        # Combine into a single sample
-        sample = np.concatenate([ray_origin, ray_direction, rgb])
+        rgb_value = self.rgb_values[idx]
         
         if self.use_precomputed_points:
-            # Get the original indices
-            img_idx, h, w = self.idx_mapping[idx]
-            # Extract the points for this ray - make a copy to ensure writability
-            points = np.array(self.points_3D[img_idx, :, h, w, :], copy=True)
-            return sample, points
-        else:
-            return sample
+            # Add a check to prevent index out of bounds
+            if idx < len(self.points_3D):
+                points_3D = self.points_3D[idx]
+                return torch.from_numpy(ray_origin).float(), torch.from_numpy(ray_direction).float(), torch.from_numpy(rgb_value).float(), torch.from_numpy(points_3D).float()
+            else:
+                # Either disable use of precomputed points for this ray
+                print(f"Warning: Index {idx} out of bounds for points_3D with size {len(self.points_3D)}")
+                return torch.from_numpy(ray_origin).float(), torch.from_numpy(ray_direction).float(), torch.from_numpy(rgb_value).float()
+        
+        return torch.from_numpy(ray_origin).float(), torch.from_numpy(ray_direction).float(), torch.from_numpy(rgb_value).float()
+    
 
 # Define the function to compute accumulated transmittance
 def compute_accumulated_transmittance(alphas):
     accumulated_transmittance = torch.cumprod(alphas, 1) #Accumulated transmittance over all points (dim 1)
     return torch.cat((torch.ones((accumulated_transmittance.shape[0], 1), device=alphas.device), #Transmission is 1 at first point of each ray
                     accumulated_transmittance[:, :-1]), dim=-1)
+
+def render_rays(nerf_model, ray_origins, ray_directions, hn=0, hf=0.5, nb_bins=192):
+    device = ray_origins.device
+    
+    t = torch.linspace(hn, hf, nb_bins, device=device).expand(ray_origins.shape[0], nb_bins)
+    # Perturb sampling along each ray.
+    mid = (t[:, :-1] + t[:, 1:]) / 2.
+    lower = torch.cat((t[:, :1], mid), -1)
+    upper = torch.cat((mid, t[:, -1:]), -1)
+    u = torch.rand(t.shape, device=device)
+    t = lower + (upper - lower) * u  # [batch_size, nb_bins]
+    delta = torch.cat((t[:, 1:] - t[:, :-1], torch.tensor([1e10], device=device).expand(ray_origins.shape[0], 1)), -1)
+
+    # Compute the 3D points along each ray
+    x = ray_origins.unsqueeze(1) + t.unsqueeze(2) * ray_directions.unsqueeze(1)   # [batch_size, nb_bins, 3]
+    # Expand the ray_directions tensor to match the shape of x
+    ray_directions = ray_directions.expand(nb_bins, ray_directions.shape[0], 3).transpose(0, 1) 
+
+    colors, sigma = nerf_model(x.reshape(-1, 3), ray_directions.reshape(-1, 3))
+    colors = colors.reshape(x.shape)
+    sigma = sigma.reshape(x.shape[:-1])
+
+    alpha = 1 - torch.exp(-sigma * delta)  # [batch_size, nb_bins]
+    weights = compute_accumulated_transmittance(1 - alpha).unsqueeze(2) * alpha.unsqueeze(2)
+    # Compute the pixel values as a weighted sum of colors along each ray
+    c = (weights * colors).sum(dim=1)
+    weight_sum = weights.sum(-1).sum(-1)  # Regularization for white background 
+    return c + 1 - weight_sum.unsqueeze(-1)
 
 # Define the render_from_presampled function
 def render_from_presampled(nerf_model, ray_origins, ray_directions, points_3D, chunk_size=64):
@@ -275,8 +175,6 @@ def render_from_presampled(nerf_model, ray_origins, ray_directions, points_3D, c
     colors = torch.cat(colors_list, dim=0)
     sigma = torch.cat(sigma_list, dim=0)
     
-    # Rest of your rendering code...
-    
     # Calculate alpha from sigma and deltas
     alpha = 1 - torch.exp(-sigma * deltas)
     
@@ -289,27 +187,29 @@ def render_from_presampled(nerf_model, ray_origins, ray_directions, points_3D, c
     
     # Return final color (adding white background)
     return c + 1 - weight_sum.unsqueeze(-1)
+    #return c 
 
 # Define the training function
-def train(nerf_model, optimizer, scheduler, data_loader, device='cpu', nb_epochs=int(1e5)):
+def train(nerf_model, optimizer, scheduler, data_loader, device='cuda', nb_epochs=int(1e5)):
     training_loss = []
     for epoch in tqdm(range(nb_epochs)):
         epoch_loss = 0
         for i,batch in enumerate(data_loader):
             print(f"Processing Batch {i}")
-            if len(batch) == 2:  # If using precomputed points
-                print("Using Precomputed data")
-                data, points_3D = batch
-                ray_origins = data[:, :3].to(device)
-                ray_directions = data[:, 3:6].to(device)
-                ground_truth_px_values = data[:, 6:].to(device)
-                points_3D = points_3D.to(device)
-                
-                print("Vol Rendering start")
-                regenerated_px_values = render_from_presampled(
-                    nerf_model, ray_origins, ray_directions, points_3D
-                )
-                print("Volume Rendering Fin")
+            #if len(batch) == 2:  # If using precomputed points
+            print("Using Precomputed data")
+            ray_origins, ray_directions, ground_truth_px_values, points_3D = batch
+            ray_origins = ray_origins.to(device)
+            ray_directions = ray_directions.to(device)
+            ground_truth_px_values = ground_truth_px_values.to(device)
+            #points_3D = points_3D.to(device)
+
+            print("Vol Rendering start")
+            # regenerated_px_values = render_from_presampled(
+            #     nerf_model, ray_origins, ray_directions, points_3D
+            # )
+            regenerated_px_values = render_rays(nerf_model,ray_origins,ray_directions,hn=2,hf=6,nb_bins=192)
+            print("Volume Rendering Fin")
             
             loss = ((ground_truth_px_values - regenerated_px_values) ** 2).sum()
             epoch_loss += loss.item()
@@ -317,6 +217,8 @@ def train(nerf_model, optimizer, scheduler, data_loader, device='cpu', nb_epochs
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
+            #wandb.log({"epoch_unsup": Epochs, "loss_unsup": avg_epoch_loss, "acc_unsup": avg_epoch_accuracy, "epe_unsup": avg_epe_loss})
         
         training_loss.append(epoch_loss / len(data_loader))
         scheduler.step()
@@ -324,6 +226,7 @@ def train(nerf_model, optimizer, scheduler, data_loader, device='cpu', nb_epochs
         # Print progress
         #if (epoch + 1) % 10 == 0:
         print(f"Epoch {epoch+1}/{nb_epochs}, Loss: {training_loss[-1]:.4f}")
+        wandb.log({"Epochs":epoch+1, "Loss":training_loss[-1]})
             
         # Save model checkpoint
         if (epoch + 1) % 1000 == 0:
@@ -333,6 +236,7 @@ def train(nerf_model, optimizer, scheduler, data_loader, device='cpu', nb_epochs
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': training_loss[-1],
             }, f"checkpoints/nerf_model_epoch_{epoch+1}.pth")
+
             
     return training_loss
 
@@ -345,9 +249,9 @@ def gpu_usage():
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Train a NeRF model')
-    parser.add_argument('--data_dir', type=str, default='/home/sviswasam/cv/Lego_Data_Processed/', help='Directory containing the dataset')
-    parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training')
-    parser.add_argument('--epochs', type=int, default=30000, help='Number of epochs to train')
+    parser.add_argument('--data_dir', type=str, default='/home/sviswasam/cv/Ship_Data_Processed/', help='Directory containing the dataset')
+    parser.add_argument('--batch_size', type=int, default=1024, help='Batch size for training')
+    parser.add_argument('--epochs', type=int, default=16, help='Number of epochs to train')
     parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate')
     parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden dimension of the NeRF network')
     parser.add_argument('--use_precomputed', action='store_true', help='Use precomputed 3D points')
@@ -377,10 +281,13 @@ if __name__ == "__main__":
     
     # Create dataset
     dataset = NeRFDataset(ray_origins_path, ray_directions_path, rgb_path, points_3D_path)
+    #dataset = NeRFDataset(ray_origins_path, ray_directions_path, rgb_path, points_3D_path, 
+                     #num_images=100, H=800, W=800) 
     
     print("Started Dataloading...")
     # Create data loader
     data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+    #data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=False)
     print("Data loaded Successfully")
     
     # Create model
@@ -391,7 +298,8 @@ if __name__ == "__main__":
     
     # Create optimizer and scheduler
     optimizer = torch.optim.Adam(nerf_model.parameters(), lr=args.lr)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999)
+    #scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9999)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[2, 4, 8], gamma=0.5)
     
     # Train model
     print("Starting training...")
@@ -404,6 +312,8 @@ if __name__ == "__main__":
         nb_epochs=args.epochs
     )
 
+    wandb.finish()
+
     print("Training finished. Saving model...")
     
     # Save final model
@@ -411,7 +321,7 @@ if __name__ == "__main__":
         'model_state_dict': nerf_model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'loss': training_loss[-1],
-    }, "checkpoints/nerf_model_final.pth")
+    }, "checkpoints/nerf_model_ship.pth")
     
     # # Plot training loss
     # plt.figure(figsize=(10, 5))
