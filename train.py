@@ -11,7 +11,7 @@ import wandb
 
 from Network import NeRFNetwork
 
-wandb.init(project="NeRF", name="ship_train")
+wandb.init(project="NeRF", name="lego_train")
 
 class NeRFDataset(Dataset):
     def __init__(self, ray_origins_path, ray_directions_path, rgb_path, points_3D_path=None):
